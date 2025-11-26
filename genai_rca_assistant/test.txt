@@ -1,0 +1,51 @@
+curl -X POST "https://unepitaphed-brazenly-lola.ngrok-free.dev/azure-monitor" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "schemaId":"azureMonitorCommonAlertSchema",
+    "data": {
+      "essentials": {
+        "alertRule":"ADF Pipeline Failed",
+        "alertId":"abcd-1234",
+        "description":"Pipeline failed",
+        "severity":"Sev3",
+        "alertTargetIDs":["/subscriptions/d28a053b-ed09-40dd-92d6-43401a2c9799/resourceGroups/rg_techdemo_2025_Q4/providers/Microsoft.DataFactory/factories/adf-techdemo-rca"]
+      },
+      "context": {
+        "properties": {
+          "PipelineName":"sales_etl_pipeline",
+          "PipelineRunId":"run-20251120-001",
+          "message":"Activity 'CopyFromBlob' failed with error: blob not found"
+        }
+      }
+    }
+  }'
+
+
+
+  curl -X POST https://unepitaphed-brazenly-lola.ngrok-free.dev/azure-monitor \
+  -H "X-Api-Key: balaji-rca-secret-2025" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "data": {
+      "context": {
+        "properties": {
+          "PipelineName": "TestPipeline",
+          "PipelineRunId": "test-run-123",
+          "ErrorMessage": "Source blob does not exist at path: /data/input.csv"
+        }
+      }
+    }
+  }'
+
+
+curl -X POST https://unepitaphed-brazenly-lola.ngrok-free.dev/databricks-monitor \
+  -H "X-Api-Key: balaji-rca-secret-2025" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "job_name": "TestJob",
+    "run_id": "test-12345",
+    "job_id": "67890",
+    "cluster_id": "test-cluster",
+    "error_message": "Cluster failed to start: INSUFFICIENT_WORKER_NODES",
+    "workspace_url": "https://adb-123456.azuredatabricks.net"
+  }'
