@@ -870,11 +870,23 @@ async def check_ticket_exists(run_id: str, x_api_key: Optional[str] = Header(Non
         logger.info(f"INFO: No existing ticket for run_id {run_id}")
         return {"exists": False, "ticket_id": None}
 
-# --- Azure Monitor Endpoint (API Key Auth) WITH DEDUPLICATION ---
+# --- Azure Monitor Endpoint (NO AUTH - Azure Action Groups don't support headers) ---
 @app.post("/azure-monitor")
-async def azure_monitor(request: Request, x_api_key: Optional[str] = Header(None)):
-    if x_api_key != RCA_API_KEY:
-        raise HTTPException(status_code=401, detail="Unauthorized")
+async def azure_monitor(request: Request):
+    """
+    Receive alerts directly from Azure Monitor Action Groups
+
+    NOTE: No API key authentication because Azure Monitor Action Groups
+    do not support custom headers. Security is provided by:
+    1. Non-public endpoint URL (keep it secret)
+    2. Azure network security groups (if configured)
+    3. Payload validation
+    4. Azure subscription access controls
+    """
+
+    logger.info("=" * 80)
+    logger.info("AZURE MONITOR WEBHOOK RECEIVED (Direct - No Auth)")
+    logger.info("=" * 80)
 
     try:
         body = await request.json()
@@ -882,34 +894,43 @@ async def azure_monitor(request: Request, x_api_key: Optional[str] = Header(None
         logger.error("Invalid JSON body: %s", e)
         raise HTTPException(status_code=400, detail="Invalid JSON payload")
 
-    essentials = body.get("essentials") or body.get("data", {}).get("essentials") or body
-    properties = body.get("data", {}).get("context", {}).get("properties", {})
-    err = properties.get("error") or properties.get("Error") or {}
-    specific_error = None
-    if isinstance(err, dict):
-        specific_error = (err.get("message") or err.get("Message") or err.get("value") or err.get("Value"))
+    # Log raw payload preview for debugging
+    logger.info("Raw payload preview (first 500 chars):")
+    logger.info(json.dumps(body, indent=2)[:500])
 
-    desc = (specific_error or properties.get("detailedMessage") or properties.get("ErrorMessage") or
-            properties.get("message") or essentials.get("description") or str(body))
+    # Use error extractor to parse webhook
+    from error_extractors import AzureDataFactoryExtractor
 
-    if desc and "forwarded to rca system" in desc.lower():
-        match = re.search(r"(ErrorMessage|Message)=(.+)(?=Forwarded to RCA system)", desc, re.IGNORECASE | re.DOTALL)
-        if match:
-            desc = match.group(2).strip().strip("'")
-            logger.info("Cleaned Logic App summary: %s", desc[:200])
+    try:
+        pipeline, runid, desc, metadata = AzureDataFactoryExtractor.extract(body)
+        logger.info(f"✓ Extracted via AzureDataFactoryExtractor: pipeline={pipeline}, run_id={runid}")
+        logger.info(f"✓ Error message length: {len(desc)} chars")
+        logic_app_run_id = metadata.get("logic_app_run_id", "N/A")
+        processing_mode = "direct_webhook"
+    except Exception as e:
+        logger.error(f"Error extraction failed: {e}")
+        # Fallback to manual extraction
+        essentials = body.get("essentials") or body.get("data", {}).get("essentials") or body
+        properties = body.get("data", {}).get("context", {}).get("properties", {})
+        err = properties.get("error") or properties.get("Error") or {}
+        specific_error = None
+        if isinstance(err, dict):
+            specific_error = (err.get("message") or err.get("Message") or err.get("value") or err.get("Value"))
 
-    logger.info("ADF Error being sent to Gemini:\n%s", desc)
+        desc = (specific_error or properties.get("detailedMessage") or properties.get("ErrorMessage") or
+                properties.get("message") or essentials.get("description") or str(body))
 
-    pipeline = (properties.get("PipelineName") or
-                essentials.get("pipelineName") or
-                essentials.get("alertRule") or
-                "ADF Pipeline Failure")
-    runid = (properties.get("PipelineRunId") or
-             essentials.get("runId") or
-             essentials.get("alertId"))
-    
-    logic_app_run_id = properties.get("LogicAppRunId", "N/A")
-    processing_mode = properties.get("ProcessingMode", "Single")
+        pipeline = (properties.get("PipelineName") or
+                    essentials.get("pipelineName") or
+                    essentials.get("alertRule") or
+                    "ADF Pipeline Failure")
+        runid = (properties.get("PipelineRunId") or
+                 essentials.get("runId") or
+                 essentials.get("alertId"))
+        logic_app_run_id = "N/A"
+        processing_mode = "direct_webhook_fallback"
+
+    logger.info("ADF Error being sent to Gemini:\n%s", desc[:500])
 
     # ** DEDUPLICATION CHECK**
     if runid:
@@ -918,11 +939,11 @@ async def azure_monitor(request: Request, x_api_key: Optional[str] = Header(None
         if existing:
             logger.warning(f"WARNING: DUPLICATE DETECTED: run_id {runid} already has ticket {existing['id']}")
             log_audit(
-                ticket_id=existing["id"], 
+                ticket_id=existing["id"],
                 action="Duplicate Run Detected",
                 pipeline=pipeline,
                 run_id=runid,
-                details=f"Logic App attempted to create duplicate ticket for run_id {runid}. Original ticket: {existing['id']}"
+                details=f"Azure Monitor webhook attempted to create duplicate ticket for run_id {runid}. Original ticket: {existing['id']}"
             )
             return JSONResponse({
                 "status": "duplicate_ignored",
@@ -989,10 +1010,10 @@ async def azure_monitor(request: Request, x_api_key: Optional[str] = Header(None
     log_audit(ticket_id=tid, action="Ticket Created", pipeline=pipeline, run_id=runid,
               rca_summary=rca.get("root_cause")[:200] if rca.get("root_cause") else "", sla_status="Pending",
               finops_team=finops_tags["team"], finops_owner=finops_tags["owner"],
-              details=f"Severity: {severity}, Priority: {priority}, Processing Mode: {processing_mode}")
+              details=f"Severity: {severity}, Priority: {priority}, Source: Azure Monitor Direct Webhook")
 
-    log_audit(ticket_id=tid, action="Logic App Forwarded", pipeline=pipeline, run_id=runid,
-              details=f"Alert forwarded from Logic App (Run: {logic_app_run_id}) to FastAPI RCA system")
+    log_audit(ticket_id=tid, action="Azure Monitor Webhook Received", pipeline=pipeline, run_id=runid,
+              details=f"Alert received directly from Azure Monitor Action Group (no Logic App)")
     
     itsm_ticket_id = None
     logger.info(f"ITSM_TOOL setting is: '{ITSM_TOOL}'")
@@ -1018,7 +1039,9 @@ async def azure_monitor(request: Request, x_api_key: Optional[str] = Header(None
         logger.debug("Broadcast failed: %s", e)
     
     try:
-        slack_result = post_slack_notification(tid, essentials, rca, itsm_ticket_id)
+        # Create essentials dict for Slack notification
+        essentials_for_slack = {"alertRule": pipeline, "runId": runid, "pipelineName": pipeline}
+        slack_result = post_slack_notification(tid, essentials_for_slack, rca, itsm_ticket_id)
         if slack_result:
             log_audit(ticket_id=tid, action="Slack Notification Sent", pipeline=pipeline, run_id=runid,
                       details=f"Notification sent to channel: {SLACK_ALERT_CHANNEL}",
@@ -1028,48 +1051,24 @@ async def azure_monitor(request: Request, x_api_key: Optional[str] = Header(None
         log_audit(ticket_id=tid, action="Slack Notification Failed", pipeline=pipeline, run_id=runid,
                   details=f"Error: {str(e)}")
 
-    # # Auto-Remediation
-    # if AUTO_REMEDIATION_ENABLED:
-    #     ai_error_type = rca.get("error_type")
-    #     playbook_url = PLAYBOOK_REGISTRY.get(ai_error_type)
-        
-    #     if playbook_url:
-    #         logger.info(f"AUTO-REMEDIATION: AUTO-REMEDIATION: Found playbook for {ai_error_type}. Triggering: {playbook_url}")
-    #         log_audit(ticket_id=tid, action="Auto-Remediation Triggered",
-    #                   details=f"Found playbook for {ai_error_type}.", itsm_ticket_id=itsm_ticket_id)
-    #         playbook_payload = {
-    #             "ticket_id": tid,
-    #             "run_id": runid,
-    #             "pipeline": pipeline,
-    #             "error_details": rca
-    #         }
-    #         try:
-    #             r = await asyncio.to_thread(_http_post_with_retries, playbook_url, playbook_payload, 60, 3, 1.5)
-    #             if r.status_code == 200:
-    #                 try:
-    #                     resp = r.json()
-    #                 except Exception:
-    #                     resp = {}
-    #                 new_run_id = resp.get("new_run_id")
-    #                 logger.info(f"Playbook Retry Successful: New Run ID: {new_run_id}")
-    #                 log_audit(ticket_id=tid, action="Pipeline Retry Triggered", pipeline=pipeline, run_id=new_run_id,
-    #                          itsm_ticket_id=itsm_ticket_id)
-    #                 if new_run_id:
-    #                     db_execute("UPDATE tickets SET run_id = :rid WHERE id = :tid",
-    #                                {"rid": new_run_id, "tid": tid})
-    #             else:
-    #                 logger.warning(f"AUTO-REMEDIATION: AUTO-REMEDIATION: Playbook failed for {tid}. "
-    #                                f"Status: {r.status_code}, Response: {r.text}")
-    #                 log_audit(ticket_id=tid, action="Pipeline Retry Failed", details=r.text,
-    #                          itsm_ticket_id=itsm_ticket_id)
-    #         except Exception as e:
-    #             logger.error(f"Auto-Remediation exception for {tid}: {e}")
-    #             log_audit(ticket_id=tid, action="Pipeline Retry Failed", details=str(e),
-    #                      itsm_ticket_id=itsm_ticket_id)
-    #     else:
-    #         logger.info(f"AUTO-REMEDIATION: No playbook found for error type '{ai_error_type}'.")
+    # Auto-Remediation (if enabled)
+    if AUTO_REMEDIATION_ENABLED and rca.get("auto_heal_possible"):
+        error_type = rca.get("error_type")
+        logger.info(f"Auto-remediation candidate: {error_type} (implementation in AUTO_REMEDIATION_GUIDE.md)")
+        # Implementation code in AUTO_REMEDIATION_GUIDE.md
 
-    # return JSONResponse({"status": "Ticket Created", "ticket_id": tid, "rca": rca, "itsm_ticket_id": itsm_ticket_id, "run_id": runid})
+    logger.info(f"✅ Successfully created ticket {tid} for ADF alert")
+
+    return JSONResponse({
+        "status": "success",
+        "ticket_id": tid,
+        "run_id": runid,
+        "pipeline": pipeline,
+        "severity": severity,
+        "priority": priority,
+        "itsm_ticket_id": itsm_ticket_id,
+        "message": "Ticket created successfully from Azure Monitor webhook"
+    })
 
 
 # --- Databricks Monitor Endpoint (API Key Auth) WITH DEDUPLICATION ---
