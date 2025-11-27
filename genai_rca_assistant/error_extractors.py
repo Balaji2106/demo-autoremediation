@@ -16,6 +16,11 @@ class AzureDataFactoryExtractor:
         """
         Extract error details from ADF webhook
 
+        Supports multiple alert formats:
+        1. Log Analytics Alert (dimensions array) - Most detailed
+        2. Metric Alert (properties object)
+        3. Simple webhook format
+
         Returns:
             (pipeline_name, run_id, error_message, metadata)
         """
@@ -24,8 +29,25 @@ class AzureDataFactoryExtractor:
         alert_context = payload.get("data", {}).get("alertContext") or {}
         properties = alert_context.get("properties", {}) or payload.get("properties", {})
 
-        # Extract pipeline name
+        # **NEW: Check for Log Analytics Alert format (dimensions array)**
+        dimensions_dict = {}
+        condition = alert_context.get("condition", {})
+        all_of = condition.get("allOf", [])
+
+        if all_of and len(all_of) > 0:
+            dimensions = all_of[0].get("dimensions", [])
+            # Convert dimensions array to dict for easy access
+            for dim in dimensions:
+                name = dim.get("name")
+                value = dim.get("value")
+                if name and value:
+                    dimensions_dict[name] = value
+
+            logger.info(f"✓ ADF Extractor: Found Log Analytics Alert with {len(dimensions_dict)} dimensions")
+
+        # Extract pipeline name (try dimensions first, then properties)
         pipeline_name = (
+            dimensions_dict.get("PipelineName") or
             properties.get("PipelineName") or
             properties.get("pipelineName") or
             essentials.get("alertRule") or
@@ -33,8 +55,9 @@ class AzureDataFactoryExtractor:
             "ADF Pipeline"
         )
 
-        # Extract run ID
+        # Extract run ID (try dimensions first, then properties)
         run_id = (
+            dimensions_dict.get("PipelineRunId") or
             properties.get("PipelineRunId") or
             properties.get("pipelineRunId") or
             properties.get("RunId") or
@@ -42,21 +65,21 @@ class AzureDataFactoryExtractor:
             essentials.get("alertId")
         )
 
-        # Extract error message (Priority order)
-        error_obj = properties.get("Error") or properties.get("error") or {}
-
+        # Extract error message (Priority: dimensions > properties)
         error_message = (
-            # 1. Detailed error object message
-            error_obj.get("message") or
-            error_obj.get("Message") or
-            # 2. Error message fields
+            # 1. From Log Analytics dimensions (most detailed)
+            dimensions_dict.get("ErrorMessage") or
+            # 2. From properties Error object
+            (properties.get("Error") or properties.get("error") or {}).get("message") or
+            (properties.get("Error") or properties.get("error") or {}).get("Message") or
+            # 3. From properties direct fields
             properties.get("ErrorMessage") or
             properties.get("errorMessage") or
             properties.get("detailedMessage") or
-            # 3. Generic message
             properties.get("message") or
+            # 4. From essentials
             essentials.get("description") or
-            # 4. Fallback
+            # 5. Fallback
             "ADF pipeline failed. No detailed error message available."
         )
 
@@ -68,22 +91,41 @@ class AzureDataFactoryExtractor:
             if match:
                 error_message = match.group(2).strip().strip("'")
 
-        # Extract metadata
+        # Extract metadata (try dimensions first, then properties)
+        error_obj = properties.get("Error") or properties.get("error") or {}
+
         metadata = {
-            "activity_name": properties.get("ActivityName") or properties.get("activityName"),
-            "activity_type": properties.get("ActivityType") or properties.get("activityType"),
+            "activity_name": (
+                dimensions_dict.get("ActivityName") or
+                properties.get("ActivityName") or
+                properties.get("activityName")
+            ),
+            "activity_type": (
+                dimensions_dict.get("ActivityType") or
+                properties.get("ActivityType") or
+                properties.get("activityType")
+            ),
             "error_code": (
+                dimensions_dict.get("ErrorCode") or
                 error_obj.get("errorCode") or
                 properties.get("ErrorCode") or
                 properties.get("errorCode")
             ),
-            "failure_type": error_obj.get("failureType") or error_obj.get("FailureType"),
+            "failure_type": (
+                dimensions_dict.get("FailureType") or
+                error_obj.get("failureType") or
+                error_obj.get("FailureType")
+            ),
             "severity": essentials.get("severity"),
             "fired_time": essentials.get("firedDateTime"),
+            "alert_type": essentials.get("signalType"),  # "Log" or "Metric"
+            "alert_rule": essentials.get("alertRule"),
+            "monitoring_service": essentials.get("monitoringService"),
         }
 
         logger.info(f"✓ ADF Extractor: pipeline={pipeline_name}, run_id={run_id}")
-        logger.info(f"✓ ADF Extractor: error_code={metadata['error_code']}, error_length={len(error_message)}")
+        logger.info(f"✓ ADF Extractor: activity={metadata['activity_name']}, error_code={metadata['error_code']}")
+        logger.info(f"✓ ADF Extractor: alert_type={metadata['alert_type']}, error_length={len(error_message)}")
 
         return pipeline_name, run_id, error_message, metadata
 
