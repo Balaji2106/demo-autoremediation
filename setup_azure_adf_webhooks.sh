@@ -48,26 +48,35 @@ if [ -z "$FASTAPI_BASE_URL" ]; then
     exit 1
 fi
 
-# API Key
-read -p "Enter RCA API Key (from .env file): " API_KEY
-if [ -z "$API_KEY" ]; then
-    echo -e "${RED}Error: API Key is required${NC}"
-    exit 1
-fi
-
 # Remove trailing slash from URL
 FASTAPI_BASE_URL=${FASTAPI_BASE_URL%/}
 
-# Construct full endpoint URL with API key as query parameter
-# Note: Azure Monitor Action Groups don't support custom headers,
-# so we use query parameter for authentication
-WEBHOOK_URL="${FASTAPI_BASE_URL}/azure-monitor?api_key=${API_KEY}"
+# Construct full endpoint URL (NO API KEY NEEDED)
+# Azure Monitor Action Groups don't support custom headers
+# Security is provided by non-public endpoint URL
+WEBHOOK_URL="${FASTAPI_BASE_URL}/azure-monitor"
 
 echo ""
+echo -e "${YELLOW}═══════════════════════════════════════════════════════${NC}"
+echo -e "${YELLOW}  SECURITY NOTE: API Key Authentication Disabled       ${NC}"
+echo -e "${YELLOW}═══════════════════════════════════════════════════════${NC}"
+echo ""
+echo -e "${YELLOW}Azure Monitor Action Groups do NOT support custom headers.${NC}"
+echo -e "${YELLOW}Your FastAPI endpoint will accept webhooks without API key.${NC}"
+echo ""
+echo -e "${BLUE}Security is provided by:${NC}"
+echo "  1. 🔒 Non-public endpoint URL (keep it secret!)"
+echo "  2. 🛡️  Azure network security groups (if configured)"
+echo "  3. ✅ Payload validation in FastAPI"
+echo "  4. 🔐 Azure subscription access controls"
+echo ""
+echo -e "${YELLOW}IMPORTANT: Do NOT share the webhook URL publicly!${NC}"
+echo ""
+
 echo -e "${BLUE}Configuration Summary:${NC}"
 echo "  Resource Group: $RESOURCE_GROUP"
 echo "  ADF Name: $ADF_NAME"
-echo "  Webhook URL: ${FASTAPI_BASE_URL}/azure-monitor?api_key=***"
+echo "  Webhook URL: ${FASTAPI_BASE_URL}/azure-monitor"
 echo ""
 
 read -p "Is this correct? (y/n) " -n 1 -r
