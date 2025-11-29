@@ -1,0 +1,11 @@
+{
+  "IsEncrypted": false,
+  "Values": {
+    "AzureWebJobsStorage": "UseDevelopmentStorage=true",
+    "FUNCTIONS_WORKER_RUNTIME": "python",
+    "DATABRICKS_HOST": "https://adb-XXXXXX.XX.azuredatabricks.net",
+    "DATABRICKS_TOKEN": "YOUR_TOKEN_HERE",
+    "FASTAPI_URL": "https://your-rca-app.azurewebsites.net/databricks-monitor",
+    "POLLING_INTERVAL_MINUTES": "5"
+  }
+}

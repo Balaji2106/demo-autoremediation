@@ -35,7 +35,10 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 echo ""
 
 # FastAPI Endpoint
-read -p "Enter FastAPI endpoint URL (e.g., https://your-app.azurewebsites.net): " FASTAPI_BASE_URL
+echo -e "${YELLOW}Enter the BASE URL only (without /databricks-monitor)${NC}"
+echo -e "${YELLOW}Example: https://your-app.azurewebsites.net${NC}"
+echo ""
+read -p "FastAPI base URL: " FASTAPI_BASE_URL
 if [ -z "$FASTAPI_BASE_URL" ]; then
     echo -e "${RED}Error: FastAPI URL is required${NC}"
     exit 1
@@ -43,6 +46,10 @@ fi
 
 # Remove trailing slash
 FASTAPI_BASE_URL=${FASTAPI_BASE_URL%/}
+
+# Remove /databricks-monitor if user accidentally included it
+FASTAPI_BASE_URL=${FASTAPI_BASE_URL%/databricks-monitor}
+
 WEBHOOK_URL="${FASTAPI_BASE_URL}/databricks-monitor"
 
 echo ""
