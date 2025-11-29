@@ -1313,50 +1313,302 @@ async def databricks_monitor(request: Request):
         log_audit(ticket_id=tid, action="Slack Notification Failed", pipeline=job_name, run_id=run_id,
                   details=f"Error: {str(e)}")
 
-    # # Auto-Remediation for Databricks
-    # if AUTO_REMEDIATION_ENABLED:
-    #     ai_error_type = rca.get("error_type")
-    #     playbook_url = PLAYBOOK_REGISTRY.get(ai_error_type)
+    logger.info(f"✅ Successfully created ticket {tid} for Databricks alert")
 
-    #     if playbook_url:
-    #         logger.info(f"AUTO-REMEDIATION: AUTO-REMEDIATION: Found playbook for {ai_error_type}. Triggering: {playbook_url}")
-    #         log_audit(ticket_id=tid, action="Auto-Remediation Triggered",
-    #                   details=f"Found playbook for {ai_error_type}.", itsm_ticket_id=itsm_ticket_id)
-    #         playbook_payload = {
-    #             "ticket_id": tid,
-    #             "run_id": run_id,
-    #             "job_name": job_name,
-    #             "job_id": job_id,
-    #             "cluster_id": cluster_id,
-    #             "workspace_url": workspace_url,
-    #             "error_details": rca
-    #         }
-    #         try:
-    #             r = await asyncio.to_thread(_http_post_with_retries, playbook_url, playbook_payload, 60, 3, 1.5)
-    #             if r.status_code == 200:
-    #                 logger.info(f"Databricks Auto-Remediation Successful for {tid}")
-    #                 log_audit(ticket_id=tid, action="Databricks Job Retry Triggered", pipeline=job_name, run_id=run_id,
-    #                          itsm_ticket_id=itsm_ticket_id)
-    #             else:
-    #                 logger.warning(f"AUTO-REMEDIATION: AUTO-REMEDIATION: Playbook failed for {tid}. "
-    #                                f"Status: {r.status_code}, Response: {r.text}")
-    #                 log_audit(ticket_id=tid, action="Auto-Remediation Failed", details=r.text,
-    #                          itsm_ticket_id=itsm_ticket_id)
-    #         except Exception as e:
-    #             logger.error(f"Auto-Remediation exception for {tid}: {e}")
-    #             log_audit(ticket_id=tid, action="Auto-Remediation Failed", details=str(e),
-    #                      itsm_ticket_id=itsm_ticket_id)
-    #     else:
-    #         logger.info(f"AUTO-REMEDIATION: No playbook found for error type '{ai_error_type}'.")
+    return JSONResponse({
+        "status": "success",
+        "ticket_id": tid,
+        "run_id": run_id,
+        "job_name": job_name,
+        "severity": severity,
+        "priority": priority,
+        "itsm_ticket_id": itsm_ticket_id,
+        "message": "Ticket created successfully from Databricks webhook"
+    })
 
-    # return JSONResponse({
-    #     "status": "Ticket Created",
-    #     "ticket_id": tid,
-    #     "rca": rca,
-    #     "itsm_ticket_id": itsm_ticket_id,
-    #     "run_id": run_id,
-    #     "source": "databricks"
-    # })
+
+# --- Azure Monitor Alert Endpoint for Databricks Cluster Failures (NO AUTH) ---
+@app.post("/azure-monitor-alert")
+async def azure_monitor_alert(request: Request):
+    """
+    Receive Azure Monitor Log Analytics Alert webhooks for Databricks cluster failures
+
+    This endpoint handles alerts from Azure Monitor using the Common Alert Schema.
+    It extracts cluster failure details from Log Analytics SearchResults and creates tickets.
+
+    Deduplication Strategy: ClusterId + TerminationCode + TimeGenerated
+
+    NOTE: No API key authentication because Azure Monitor Action Groups
+    do not support custom headers. Security is provided by:
+    1. Non-public endpoint URL (keep it secret)
+    2. Azure network security groups (if configured)
+    3. Payload validation
+    4. Azure subscription access controls
+    """
+
+    logger.info("=" * 80)
+    logger.info("AZURE MONITOR ALERT WEBHOOK RECEIVED (Databricks Cluster Failure)")
+    logger.info("=" * 80)
+
+    try:
+        body = await request.json()
+    except Exception as e:
+        logger.error("Invalid JSON body: %s", e)
+        raise HTTPException(status_code=400, detail="Invalid JSON payload")
+
+    # Log raw payload preview for debugging
+    logger.info("Raw payload preview (first 500 chars):")
+    logger.info(json.dumps(body, indent=2)[:500])
+
+    try:
+        # Extract data from Azure Monitor Common Alert Schema
+        data = body.get("data", {})
+        essentials = data.get("essentials", {})
+        alert_context = data.get("alertContext", {})
+
+        # Get alert metadata
+        alert_rule = essentials.get("alertRule", "Databricks Cluster Alert")
+        alert_id = essentials.get("alertId", "N/A")
+        fired_time = essentials.get("firedDateTime", datetime.utcnow().isoformat())
+        severity_level = essentials.get("severity", "Sev3")
+
+        logger.info(f"Alert Rule: {alert_rule}, Alert ID: {alert_id}, Severity: {severity_level}")
+
+        # Extract SearchResults from alert context
+        search_results = alert_context.get("SearchResults", {})
+        tables = search_results.get("tables", [])
+
+        if not tables or len(tables) == 0:
+            logger.error("No SearchResults tables found in alert payload")
+            raise HTTPException(status_code=400, detail="No SearchResults found in alert")
+
+        # Get the first table (contains query results)
+        table = tables[0]
+        columns = table.get("columns", [])
+        rows = table.get("rows", [])
+
+        if not rows or len(rows) == 0:
+            logger.warning("Alert fired but no rows in SearchResults - likely resolved alert")
+            return JSONResponse({
+                "status": "ignored",
+                "message": "No cluster failures in SearchResults"
+            })
+
+        # Map column names to indices
+        column_map = {}
+        for idx, col in enumerate(columns):
+            col_name = col.get("name") if isinstance(col, dict) else col
+            column_map[col_name] = idx
+
+        logger.info(f"Column mapping: {column_map}")
+        logger.info(f"Number of cluster failures: {len(rows)}")
+
+        # Process each cluster failure (usually just one, but handle multiple)
+        created_tickets = []
+
+        for row_idx, row in enumerate(rows):
+            logger.info(f"Processing cluster failure {row_idx + 1}/{len(rows)}")
+
+            # Extract cluster details from row
+            cluster_id = row[column_map.get("ClusterId", 0)] if "ClusterId" in column_map else "Unknown"
+            cluster_name = row[column_map.get("ClusterName", 1)] if "ClusterName" in column_map else "Unknown"
+            termination_code = row[column_map.get("TerminationCode", 2)] if "TerminationCode" in column_map else "Unknown"
+            state = row[column_map.get("State", 3)] if "State" in column_map else "Unknown"
+            response = row[column_map.get("Response", 4)] if "Response" in column_map else "{}"
+            last_event = row[column_map.get("LastEvent", 5)] if "LastEvent" in column_map else fired_time
+
+            logger.info(f"Cluster: {cluster_name} (ID: {cluster_id})")
+            logger.info(f"Termination Code: {termination_code}, State: {state}")
+            logger.info(f"Last Event: {last_event}")
+
+            # Create unique run_id for deduplication: ClusterId_TerminationCode_Timestamp
+            # Use last_event timestamp to ensure uniqueness
+            event_timestamp = last_event.replace(":", "").replace("-", "").replace("T", "").replace("Z", "")[:14]
+            run_id = f"{cluster_id}_{termination_code}_{event_timestamp}"
+
+            logger.info(f"Generated run_id for deduplication: {run_id}")
+
+            # ** DEDUPLICATION CHECK **
+            existing = db_query("SELECT id, status FROM tickets WHERE run_id = :run_id",
+                               {"run_id": run_id}, one=True)
+            if existing:
+                logger.warning(f"DUPLICATE DETECTED: run_id {run_id} already has ticket {existing['id']}")
+                log_audit(
+                    ticket_id=existing["id"],
+                    action="Duplicate Run Detected",
+                    pipeline=cluster_name,
+                    run_id=run_id,
+                    details=f"Azure Monitor alert attempted to create duplicate ticket for cluster {cluster_id}. Original ticket: {existing['id']}"
+                )
+                created_tickets.append({
+                    "status": "duplicate_ignored",
+                    "ticket_id": existing["id"],
+                    "cluster_id": cluster_id,
+                    "message": f"Ticket already exists for this cluster failure"
+                })
+                continue
+
+            # Build error description for RCA
+            error_description = f"""
+Databricks Cluster Failure Detected via Azure Monitor Alert
+
+Cluster Name: {cluster_name}
+Cluster ID: {cluster_id}
+Termination Code: {termination_code}
+State: {state}
+Last Event: {last_event}
+
+Response Details:
+{response}
+
+This cluster was terminated with code '{termination_code}' which indicates a failure condition.
+            """.strip()
+
+            logger.info(f"Error description for RCA (length: {len(error_description)} chars):")
+            logger.info(error_description[:500])
+
+            # Extract FinOps tags from cluster name
+            finops_tags = extract_finops_tags(cluster_name, resource_type="databricks")
+
+            # Generate RCA using AI (Databricks-specific)
+            rca = generate_rca_and_recs(error_description, source_type="databricks")
+
+            severity = rca.get("severity", "Medium")
+            priority = rca.get("priority", derive_priority(severity))
+            sla_seconds = sla_for_priority(priority)
+
+            # Create unique ticket ID
+            tid = f"DBX-ALERT-{datetime.utcnow().strftime('%Y%m%dT%H%M%S')}-{uuid.uuid4().hex[:6]}"
+            ts = datetime.utcnow().replace(tzinfo=timezone.utc).isoformat()
+
+            # Upload payload to Azure Blob if enabled
+            blob_url = None
+            if AZURE_BLOB_ENABLED:
+                try:
+                    blob_url = await asyncio.to_thread(upload_payload_to_blob, tid, body)
+                except Exception as e:
+                    logger.error("Blob upload thread task failed: %s", e)
+
+            affected_entity_value = rca.get("affected_entity")
+            if isinstance(affected_entity_value, dict):
+                affected_entity_value = json.dumps(affected_entity_value)
+
+            # Store ticket in database
+            ticket_data = dict(
+                id=tid, timestamp=ts, pipeline=cluster_name, run_id=run_id,
+                rca_result=rca.get("root_cause"), recommendations=json.dumps(rca.get("recommendations") or []),
+                confidence=rca.get("confidence"), severity=severity, priority=priority,
+                error_type=rca.get("error_type"), affected_entity=affected_entity_value,
+                status="open", sla_seconds=sla_seconds, sla_status="Pending",
+                finops_team=finops_tags["team"], finops_owner=finops_tags["owner"],
+                finops_cost_center=finops_tags["cost_center"],
+                blob_log_url=blob_url, itsm_ticket_id=None,
+                logic_app_run_id=alert_id, processing_mode="azure_monitor_alert"
+            )
+
+            try:
+                db_execute("""
+                INSERT INTO tickets (id, timestamp, pipeline, run_id, rca_result, recommendations, confidence, severity, priority,
+                                     error_type, affected_entity, status, sla_seconds, sla_status,
+                                     finops_team, finops_owner, finops_cost_center, blob_log_url, itsm_ticket_id,
+                                     logic_app_run_id, processing_mode)
+                VALUES (:id, :timestamp, :pipeline, :run_id, :rca_result, :recommendations, :confidence, :severity, :priority,
+                        :error_type, :affected_entity, :status, :sla_seconds, :sla_status,
+                        :finops_team, :finops_owner, :finops_cost_center, :blob_log_url, :itsm_ticket_id,
+                        :logic_app_run_id, :processing_mode)
+                """, ticket_data)
+                logger.info("Databricks Alert RCA stored in DB for %s (run_id: %s)", tid, run_id)
+            except Exception as e:
+                logger.error(f"Failed to insert ticket: {e}")
+                if "UNIQUE constraint failed" in str(e) or "duplicate key" in str(e).lower():
+                    existing = db_query("SELECT id FROM tickets WHERE run_id = :run_id", {"run_id": run_id}, one=True)
+                    created_tickets.append({
+                        "status": "duplicate_race_condition",
+                        "ticket_id": existing["id"] if existing else "unknown",
+                        "cluster_id": cluster_id,
+                        "message": f"Race condition: Ticket for this cluster failure was created by another request"
+                    })
+                    continue
+                raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+
+            # Log audit trail
+            log_audit(ticket_id=tid, action="Ticket Created", pipeline=cluster_name, run_id=run_id,
+                      rca_summary=rca.get("root_cause")[:200] if rca.get("root_cause") else "", sla_status="Pending",
+                      finops_team=finops_tags["team"], finops_owner=finops_tags["owner"],
+                      details=f"Severity: {severity}, Priority: {priority}, Source: Azure Monitor Alert, ClusterID: {cluster_id}, TerminationCode: {termination_code}")
+
+            log_audit(ticket_id=tid, action="Azure Monitor Alert Received", pipeline=cluster_name, run_id=run_id,
+                      details=f"Alert received from Azure Monitor (Alert Rule: {alert_rule}, Alert ID: {alert_id})")
+
+            # Create Jira ticket if enabled
+            itsm_ticket_id = None
+            if ITSM_TOOL == "jira":
+                try:
+                    itsm_ticket_id = await asyncio.to_thread(create_jira_ticket, tid, cluster_name, rca, finops_tags, run_id)
+                    if itsm_ticket_id:
+                        db_execute("UPDATE tickets SET itsm_ticket_id = :itsm_id WHERE id = :tid",
+                                   {"itsm_id": itsm_ticket_id, "tid": tid})
+                        log_audit(ticket_id=tid, action="Jira Ticket Created", details=f"Jira ID: {itsm_ticket_id}",
+                                 itsm_ticket_id=itsm_ticket_id)
+                        ticket_data["itsm_ticket_id"] = itsm_ticket_id
+                    else:
+                        log_audit(ticket_id=tid, action="Jira Ticket Failed",
+                                  details="Jira settings incomplete or API returned null.")
+                except Exception as e:
+                    logger.error(f"Jira ticket creation thread task failed: {e}")
+                    log_audit(ticket_id=tid, action="Jira Ticket Failed", details=str(e))
+
+            # Broadcast to WebSocket clients
+            try:
+                await manager.broadcast({"event": "new_ticket", "ticket_id": tid})
+            except Exception as e:
+                logger.debug("Broadcast failed: %s", e)
+
+            # Send Slack notification
+            try:
+                essentials_for_slack = {"alertRule": cluster_name, "runId": run_id, "pipelineName": cluster_name}
+                slack_result = post_slack_notification(tid, essentials_for_slack, rca, itsm_ticket_id)
+                if slack_result:
+                    log_audit(ticket_id=tid, action="Slack Notification Sent", pipeline=cluster_name, run_id=run_id,
+                              details=f"Notification sent to channel: {SLACK_ALERT_CHANNEL}",
+                              itsm_ticket_id=itsm_ticket_id)
+            except Exception as e:
+                logger.debug("Slack notify failure: %s", e)
+                log_audit(ticket_id=tid, action="Slack Notification Failed", pipeline=cluster_name, run_id=run_id,
+                          details=f"Error: {str(e)}")
+
+            logger.info(f"✅ Successfully created ticket {tid} for cluster {cluster_id}")
+
+            created_tickets.append({
+                "status": "success",
+                "ticket_id": tid,
+                "cluster_id": cluster_id,
+                "cluster_name": cluster_name,
+                "termination_code": termination_code,
+                "severity": severity,
+                "priority": priority,
+                "itsm_ticket_id": itsm_ticket_id
+            })
+
+        # Return summary of all created tickets
+        logger.info(f"Processed {len(rows)} cluster failures, created {len([t for t in created_tickets if t['status'] == 'success'])} tickets")
+
+        return JSONResponse({
+            "status": "success",
+            "alert_rule": alert_rule,
+            "alert_id": alert_id,
+            "total_failures": len(rows),
+            "tickets_created": len([t for t in created_tickets if t["status"] == "success"]),
+            "tickets_duplicate": len([t for t in created_tickets if "duplicate" in t["status"]]),
+            "tickets": created_tickets,
+            "message": "Azure Monitor alert processed successfully"
+        })
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error processing Azure Monitor alert: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to process alert: {str(e)}")
 
 # --- Protected Endpoints (Require Auth) ---
 def _get_ticket_columns():
