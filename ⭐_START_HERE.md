@@ -74,6 +74,7 @@ This is an **AI-Powered Root Cause Analysis System** for Azure Data Factory and 
 |----------|------|---------|-----------|
 | **[📖 Reading Order Guide](./📖_READING_ORDER_GUIDE.md)** | 16 KB | How to read this project | 5 min |
 | **[📚 Complete Project Explanation](./📚_COMPLETE_PROJECT_EXPLANATION.md)** | 47 KB | Full technical deep dive | 60 min |
+| **[🔍 Function Reference Guide](./🔍_FUNCTION_REFERENCE_GUIDE.md)** | 95 KB | Every function explained | 45 min |
 | **[💬 Interview Q&A](./💬_INTERVIEW_QUESTIONS_AND_ANSWERS.md)** | 26 KB | Interview preparation | 30 min |
 | **[🔄 Before/After Comparison](./🔄_BEFORE_AFTER_COMPARISON.md)** | 18 KB | Business value proof | 10 min |
 
@@ -105,6 +106,24 @@ This is an **AI-Powered Root Cause Analysis System** for Azure Data Factory and 
 - **90+ code examples**
 - **20+ diagrams**
 - **Line-by-line explanations**
+
+---
+
+#### 🔍 **Function Reference Guide** - COMPLETE API REFERENCE
+- All 63 functions across 3 files documented
+- main.py: 49 functions explained
+- error_extractors.py: 9 functions explained
+- databricks_api_utils.py: 5 functions explained
+- Each function includes: Purpose, Parameters, Returns, Where called, Examples
+- Organized by category (Database, Auth, AI/RCA, Webhooks, etc.)
+
+**Read this if:** Need to understand what a specific function does
+
+**Contains:**
+- **63 functions documented**
+- **Function-by-function breakdown**
+- **Code examples for every function**
+- **Line number references**
 
 ---
 
@@ -200,6 +219,17 @@ This is an **AI-Powered Root Cause Analysis System** for Azure Data Factory and 
 4. 💬 Interview Q&A → Q4, Q5, Q6 (20 min)
 ```
 **You'll understand:** API endpoints, AI integration, webhook processing
+
+---
+
+### Path 6: "I need to understand a specific function"
+```
+1. 🔍 Function Reference Guide → Find your function
+2. Read: What it does, Why it exists, Where it's called
+3. Look at code example
+4. Check line number reference in actual code
+```
+**You'll understand:** Exact purpose and usage of any function
 
 ---
 
@@ -319,12 +349,14 @@ All documentation files are:
 - ✅ **Diagrams** - Visual workflows
 - ✅ **Practical** - Real-world scenarios
 - ✅ **Interview-ready** - Q&A format included
+- ✅ **Function-level** - Every function documented
 
-**Total Documentation:** 107 KB across 4 files
-- 3,524 new lines added
-- 90+ code examples
+**Total Documentation:** 202 KB across 5 files
+- 5,400+ new lines added
+- 150+ code examples
 - 20+ diagrams
 - 10+ interview questions
+- 63 functions documented
 
 ---
 
