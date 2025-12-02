@@ -30,6 +30,10 @@ from urllib.parse import quote_plus
 # Databricks API utilities
 from databricks_api_utils import fetch_databricks_run_details, extract_error_message
 
+# Auto-Remediation and AI Provider
+from auto_remediation import attempt_auto_remediation
+from ai_provider import generate_rca_and_recs as ai_generate_rca
+
 # Azure Blob Storage imports
 try:
     from azure.storage.blob import BlobServiceClient, BlobClient, ContainerClient
@@ -549,11 +553,26 @@ def fallback_rca(desc: str, source_type: str = "adf"):
     }
 
 def generate_rca_and_recs(desc, source_type="adf"):
-    ai = call_ai_for_rca(desc, source_type)
-    if ai:
-        ai.setdefault("priority", derive_priority(ai.get("severity")))
-        logger.info("AI RCA successful for %s", source_type.upper())
-        return ai
+    """
+    Generate RCA using configured AI provider (Gemini, Azure OpenAI, or Ollama)
+    Falls back to legacy call_ai_for_rca if ai_provider module is not available
+    """
+    try:
+        # Use new multi-provider AI module
+        ai = ai_generate_rca(desc)
+        if ai:
+            ai.setdefault("priority", derive_priority(ai.get("severity")))
+            logger.info("AI RCA successful for %s", source_type.upper())
+            return ai
+    except Exception as e:
+        logger.warning(f"AI provider module error: {e}. Trying legacy method...")
+        # Fallback to legacy Gemini-only method
+        ai = call_ai_for_rca(desc, source_type)
+        if ai:
+            ai.setdefault("priority", derive_priority(ai.get("severity")))
+            logger.info("AI RCA successful for %s (legacy)", source_type.upper())
+            return ai
+
     logger.warning("AI RCA failed for %s. Using fallback.", source_type.upper())
     return fallback_rca(desc, source_type)
 
@@ -1054,8 +1073,30 @@ async def azure_monitor(request: Request):
     # Auto-Remediation (if enabled)
     if AUTO_REMEDIATION_ENABLED and rca.get("auto_heal_possible"):
         error_type = rca.get("error_type")
-        logger.info(f"Auto-remediation candidate: {error_type} (implementation in AUTO_REMEDIATION_GUIDE.md)")
-        # Implementation code in AUTO_REMEDIATION_GUIDE.md
+        logger.info(f"🤖 Auto-remediation candidate detected: {error_type}")
+
+        # Prepare metadata for remediation
+        remediation_metadata = {
+            "run_id": runid,
+            "pipeline": pipeline,
+            "error_type": error_type,
+            "source": "adf",
+            "severity": severity,
+            "priority": priority
+        }
+
+        # Trigger auto-remediation asynchronously (non-blocking)
+        asyncio.create_task(
+            attempt_auto_remediation(
+                ticket_id=tid,
+                error_type=error_type,
+                metadata=remediation_metadata,
+                db_query_func=db_query,
+                db_execute_func=db_execute,
+                log_audit_func=log_audit
+            )
+        )
+        logger.info(f"✅ Auto-remediation task scheduled for ticket {tid}")
 
     logger.info(f"✅ Successfully created ticket {tid} for ADF alert")
 
@@ -1312,6 +1353,36 @@ async def databricks_monitor(request: Request):
         logger.debug("Slack notify failure: %s", e)
         log_audit(ticket_id=tid, action="Slack Notification Failed", pipeline=job_name, run_id=run_id,
                   details=f"Error: {str(e)}")
+
+    # Auto-Remediation for Databricks (if enabled)
+    if AUTO_REMEDIATION_ENABLED and rca.get("auto_heal_possible"):
+        error_type = rca.get("error_type")
+        logger.info(f"🤖 Auto-remediation candidate detected: {error_type}")
+
+        # Prepare metadata for remediation
+        remediation_metadata = {
+            "run_id": run_id,
+            "job_name": job_name,
+            "job_id": job_id,
+            "cluster_id": cluster_id,
+            "error_type": error_type,
+            "source": "databricks",
+            "severity": severity,
+            "priority": priority
+        }
+
+        # Trigger auto-remediation asynchronously (non-blocking)
+        asyncio.create_task(
+            attempt_auto_remediation(
+                ticket_id=tid,
+                error_type=error_type,
+                metadata=remediation_metadata,
+                db_query_func=db_query,
+                db_execute_func=db_execute,
+                log_audit_func=log_audit
+            )
+        )
+        logger.info(f"✅ Auto-remediation task scheduled for ticket {tid}")
 
     logger.info(f"✅ Successfully created ticket {tid} for Databricks alert")
 

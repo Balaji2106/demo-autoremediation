@@ -12,8 +12,10 @@ pyodbc==5.0.1
 # Azure integrations
 azure-storage-blob==12.19.0
 
-# AI/ML
-google-generativeai==0.3.1
+# AI/ML - Multi-Provider Support
+google-generativeai==0.3.1  # For Gemini (default)
+# Note: Azure OpenAI uses requests library (already included)
+# Note: Ollama uses requests library (already included)
 
 # HTTP requests
 requests==2.31.0
