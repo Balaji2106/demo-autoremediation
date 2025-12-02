@@ -82,19 +82,16 @@ for job in selected_jobs:
         current_job = w.jobs.get(job_id)
 
         # Add webhook notification
+        # Note: Databricks SDK uses 'url' in the Webhook object directly
         webhook_notifications = jobs.WebhookNotifications(
-            on_failure=[
-                jobs.Webhook(
-                    id="auto-heal-on-failure",
-                    url=WEBHOOK_URL
-                )
-            ],
-            on_duration_warning_threshold_exceeded=[
-                jobs.Webhook(
-                    id="auto-heal-on-timeout",
-                    url=WEBHOOK_URL
-                )
-            ]
+            on_failure=[{
+                "id": "auto-heal-on-failure",
+                "url": WEBHOOK_URL
+            }],
+            on_duration_warning_threshold_exceeded=[{
+                "id": "auto-heal-on-timeout",
+                "url": WEBHOOK_URL
+            }]
         )
 
         # Update job with webhook
